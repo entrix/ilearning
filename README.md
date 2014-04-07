@@ -30,7 +30,7 @@ _calcNet_ is network representaion after some initialization like
   [calcMode,calcNet,calcData,calcHints,~,~] = nncalc.setup1(calcMode,net,rawData);
   [calcLib,calcNet] = nncalc.setup2(calcMode,calcNet,calcData,calcHints);
 ```
-*Y* and *Af* similar to the outputs of the sim function (*Y* for _calcpd_, *Af* for _calca_).
+**Y** and *Af* similar to the outputs of the sim function (*Y* for _calcpd_, *Af* for _calca_).
 
 _calcperf_ can be replaced by 
 ```  
