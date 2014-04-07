@@ -42,6 +42,6 @@ calce can be replaced by
 ```
   [~,~,~,Je,Jx,~] = calcLib.perfsJEJJ(calcNet);
 ```
-where  ~~Je ~~ correspond to each coeff in the network and Jx is a Jacobian.
+where  ~~Je~~ correspond to each coeff in the network and Jx is a Jacobian.
 These procedure initialized as well as above.
 
