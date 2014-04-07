@@ -2,3 +2,46 @@ ilearning
 =========
 
 Repository for some kinds of matlab programs which use to incremental (adaptive) learning processes.
+===================================================================================================
+
+
+Some notions about Matlab.
+
+I'm starting use some legacy code in order to use Kalman Filter procedure to learn simple recurrent (time delay) netwoek in the same way as with the Levenberg-Markwardt gradient procedure. And I encountered with problems of non-compatibility code. I want to touch on some of them.
+
+In the past Matlab has functions like calcpd, calca, calce and calcperf for computing delayed network inputs? outputs? layer inputs/outputs and so on, but now all these features have been excluded.
+
+calcpd and calca can be replaced by
+
+  [Y,Af] = calcLib.y(calcNet);
+  
+calcNet is network representaion after some initialization like
+  
+  [X,Xi,Ai,T,EW,~] = preparets(net,X,Tl);
+  [net,rawData,~,~] = nntraining.setup(net,net.trainFcn,X,Xi,Ai,T,EW,false);
+  %   end
+  
+  % Calculation Mode
+  calcMode = nncalc.defaultMode(net,Ai);
+  calcMode.options = nnet.options.calc.defaults;
+  calcMode.options.showResources = 'yes';
+
+  % Setup simulation/training calculation mode, network, data and hints
+  [calcMode,calcNet,calcData,calcHints,~,~] = nncalc.setup1(calcMode,net,rawData);
+  [calcLib,calcNet] = nncalc.setup2(calcMode,calcNet,calcData,calcHints);
+  
+Y and Af similar to the outputs of the sim function (Y for calcpd, Af for calca).
+  
+calcperf can be replaced by 
+  
+  perf2 = calcLib.trainPerf(calcNet);
+  
+with analougus procedures for initialization as mentioned above.
+
+calce can be replaced by
+
+  [~,~,~,Je,Jx,~] = calcLib.perfsJEJJ(calcNet);
+  
+where Je correspond to each coeff in the network and Jx is a Jacobian.
+These procedure initialized as well as above.
+
