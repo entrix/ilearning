@@ -1,4 +1,4 @@
-function [out1,out2] = trainkf(varargin)
+п»їfunction [out1,out2] = trainkf(varargin)
 %TRAINLM Levenberg-Marquardt backpropagation.
 %
 %  <a href="matlab:doc trainlm">trainlm</a> is a network training function that updates weight and
@@ -44,7 +44,7 @@ function [out1,out2] = trainkf(varargin)
 %  See also trainscg, feedforwardnet, narxnet.
 
 % Mark Beale, 11-31-97, ODJ 11/20/98
-% Updated by Orlando De Jesъs, Martin Hagan, Dynamic Training 7-20-05
+% Updated by Orlando De JesСЉs, Martin Hagan, Dynamic Training 7-20-05
 % Copyright 1992-2012 The MathWorks, Inc.
 % $Revision: 1.1.6.20 $ $Date: 2013/04/02 20:01:18 $
 
@@ -181,13 +181,13 @@ function [calcNet,tr] = train_network(archNet,rawData,calcLib,calcNet,tr)
   
   [perf,vperf,tperf,~,~,gradient] = calcLib.perfsJEJJ(calcNet);
   
-  % calcNet - аналог сети, используемый для вычислений
+  % calcNet - Р°РЅР°Р»РѕРі СЃРµС‚Рё, РёСЃРїРѕР»СЊР·СѓРµРјС‹Р№ РґР»СЏ РІС‹С‡РёСЃР»РµРЅРёР№
   if isMainWorker
     [best,val_fail] = nntraining.validation_start(calcNet,perf,vperf);
-    % все веса сети, включая веса входного слоя, веса реккурентных обратных
-    % связей и веса смещений
+    % РІСЃРµ РІРµСЃР° СЃРµС‚Рё, РІРєР»СЋС‡Р°СЏ РІРµСЃР° РІС…РѕРґРЅРѕРіРѕ СЃР»РѕСЏ, РІРµСЃР° СЂРµРєРєСѓСЂРµРЅС‚РЅС‹С… РѕР±СЂР°С‚РЅС‹С…
+    % СЃРІСЏР·РµР№ Рё РІРµСЃР° СЃРјРµС‰РµРЅРёР№
     WB = calcLib.getwb(calcNet);
-    % длина вектора весов
+    % РґР»РёРЅР° РІРµРєС‚РѕСЂР° РІРµСЃРѕРІ
     lengthWB = length(WB);
     mu = param.mu;
     % set as general net
@@ -239,27 +239,27 @@ function [calcNet,tr] = train_network(archNet,rawData,calcLib,calcNet,tr)
     
     % Kalman Filter
     % **********************************************
-    % Инициализация
+    % РРЅРёС†РёР°Р»РёР·Р°С†РёСЏ
     calcNet2 = calcNet;
     
-    % Матрицу ковариации извлекаем из пользовательских данных. Иначе, если
-    % мы поместим матрицу P в trainParam, то мы не сможем использовать
-    % функцию sim для моделирования сети, поскольку функция sim
-    % перегружена, а обект сети (первый аргумент фeнкции sim) не будет
-    % распознан
+    % РњР°С‚СЂРёС†Сѓ РєРѕРІР°СЂРёР°С†РёРё РёР·РІР»РµРєР°РµРј РёР· РїРѕР»СЊР·РѕРІР°С‚РµР»СЊСЃРєРёС… РґР°РЅРЅС‹С…. РРЅР°С‡Рµ, РµСЃР»Рё
+    % РјС‹ РїРѕРјРµСЃС‚РёРј РјР°С‚СЂРёС†Сѓ P РІ trainParam, С‚Рѕ РјС‹ РЅРµ СЃРјРѕР¶РµРј РёСЃРїРѕР»СЊР·РѕРІР°С‚СЊ
+    % С„СѓРЅРєС†РёСЋ sim РґР»СЏ РјРѕРґРµР»РёСЂРѕРІР°РЅРёСЏ СЃРµС‚Рё, РїРѕСЃРєРѕР»СЊРєСѓ С„СѓРЅРєС†РёСЏ sim
+    % РїРµСЂРµРіСЂСѓР¶РµРЅР°, Р° РѕР±РµРєС‚ СЃРµС‚Рё (РїРµСЂРІС‹Р№ Р°СЂРіСѓРјРµРЅС‚ С„eРЅРєС†РёРё sim) РЅРµ Р±СѓРґРµС‚
+    % СЂР°СЃРїРѕР·РЅР°РЅ
     net.userdata.P = 1e2*eye( lengthWB );
     P = net.userdata.P;
     norm_max = 1e3;
     while true
-        % Якобиан // здесь Jx - это транспонированный якобиан (Хайкин), т.е.
-        % т.е. Jx = de/dw = - dy/dw (матрица градиента)
+        % РЇРєРѕР±РёР°РЅ // Р·РґРµСЃСЊ Jx - СЌС‚Рѕ С‚СЂР°РЅСЃРїРѕРЅРёСЂРѕРІР°РЅРЅС‹Р№ СЏРєРѕР±РёР°РЅ (РҐР°Р№РєРёРЅ), С‚.Рµ.
+        % С‚.Рµ. Jx = de/dw = - dy/dw (РјР°С‚СЂРёС†Р° РіСЂР°РґРёРµРЅС‚Р°)
         [~,~,~,Ewb,Jx,~] = calcLib.perfsJEJJ(calcNet2);
         
         R = eye( size(Jx,2) )*1e-1;
         %             Q = eye( calcHints )*1e-6;
         Q = 2e-3*P;
         H = -Jx';
-        % Настройка коэффициента "забывания"
+        % РќР°СЃС‚СЂРѕР№РєР° РєРѕСЌС„С„РёС†РёРµРЅС‚Р° "Р·Р°Р±С‹РІР°РЅРёСЏ"
         normP = max(max(P));
         % if(normP/norm_max<1)
         % beta = (1 - normP/norm_max)*beta_max;
@@ -274,7 +274,7 @@ function [calcNet,tr] = train_network(archNet,rawData,calcLib,calcNet,tr)
         % dbstop if warning
         I = eye( lengthWB );
         
-        % Уравнения наблюдателя Калмана (рекуррентный МНК как частный случай)
+        % РЈСЂР°РІРЅРµРЅРёСЏ РЅР°Р±Р»СЋРґР°С‚РµР»СЏ РљР°Р»РјР°РЅР° (СЂРµРєСѓСЂСЂРµРЅС‚РЅС‹Р№ РњРќРљ РєР°Рє С‡Р°СЃС‚РЅС‹Р№ СЃР»СѓС‡Р°Р№)
         P = P + Q;
         S = H*P*H' + R;
         K = P*H'/S;
