@@ -38,7 +38,7 @@ _calcperf_ can be replaced by
 ```
 with analougus procedures for initialization as mentioned above.
 
-calce can be replaced by
+_calce_ can be replaced by
 ```
   [~,~,~,Je,Jx,~] = calcLib.perfsJEJJ(calcNet);
 ```
