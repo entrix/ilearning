@@ -1,4 +1,4 @@
-﻿function [out1,out2] = trainkf(varargin)
+function [out1,out2] = trainlm(varargin)
 %TRAINLM Levenberg-Marquardt backpropagation.
 %
 %  <a href="matlab:doc trainlm">trainlm</a> is a network training function that updates weight and
@@ -44,9 +44,9 @@
 %  See also trainscg, feedforwardnet, narxnet.
 
 % Mark Beale, 11-31-97, ODJ 11/20/98
-% Updated by Orlando De Jesъs, Martin Hagan, Dynamic Training 7-20-05
+% Updated by Orlando De Jes�s, Martin Hagan, Dynamic Training 7-20-05
 % Copyright 1992-2012 The MathWorks, Inc.
-% $Revision: 1.1.6.20 $ $Date: 2013/04/02 20:01:18 $
+% $Revision: 1.1.6.18 $ $Date: 2012/08/21 01:05:22 $
 
 %% =======================================================
 %  BOILERPLATE_START
@@ -168,10 +168,8 @@ function [calcNet,tr] = train_network(archNet,rawData,calcLib,calcNet,tr)
 
   % Create broadcast variables
   stop = [];
-  perfBreak = [];
   
   % Initialize
-  % disable window
 %   archNet.trainParam.showWindow = false;
   param = archNet.trainParam;
   if isMainWorker
@@ -179,23 +177,22 @@ function [calcNet,tr] = train_network(archNet,rawData,calcLib,calcNet,tr)
     original_net = calcNet;
   end
   
-  [perf,vperf,tperf,~,~,gradient] = calcLib.perfsJEJJ(calcNet);
+  [perf,vperf,tperf,~,jj,gradient] = calcLib.perfsJEJJ(calcNet);
   
-  % calcNet - аналог сети, используемый для вычислений
   if isMainWorker
     [best,val_fail] = nntraining.validation_start(calcNet,perf,vperf);
-    % все веса сети, включая веса входного слоя, веса реккурентных обратных
-    % связей и веса смещений
     WB = calcLib.getwb(calcNet);
-    % длина вектора весов
     lengthWB = length(WB);
+%     ii = sparse(1:lengthWB,1:lengthWB,ones(1,lengthWB));
     mu = param.mu;
     % set as general net
     net = archNet;
 
     % Training Record
-    tr = nnet.trainingRecord.start(tr,param.goal,{'epoch','time','perf','vperf','tperf','mu','gradient','val_fail'});
-    
+    tr.best_epoch = 0;
+    tr.goal = param.goal;
+    tr.states = {'epoch','time','perf','vperf','tperf','gradient','val_fail'};
+
     % Status
     status = ...
       [ ...
@@ -203,12 +200,22 @@ function [calcNet,tr] = train_network(archNet,rawData,calcLib,calcNet,tr)
       nntraining.status('Time','seconds','linear','discrete',0,param.time,0), ...
       nntraining.status('Performance','','log','continuous',perf,param.goal,perf) ...
       nntraining.status('Gradient','','log','continuous',gradient,param.min_grad,gradient) ...
-      nntraining.status('Mu','','log','continuous',mu,param.mu_max,mu) ...
       nntraining.status('Validation Checks','','linear','discrete',0,param.max_fail,0) ...
       ];
-    nnet.train.feedback('start',archNet,tr,calcLib.options,status);
+    nn_train_feedback('start',archNet,status);
   end
 
+  e = net.userdata.e;
+  nu = net.userdata.nu;
+  q = net.userdata.q;
+  norm_max = net.userdata.norm_max;
+  isIncremental = net.userdata.isIncremental;
+  toDiagonal = net.userdata.toDiagonal;
+  
+  P = (1 / e)  * eye( lengthWB );
+  R = (1 / nu) * eye( size(jj,2) );
+  Q = q        * eye( lengthWB );
+  
   % Train
   for epoch = 0:param.epochs
 
@@ -227,76 +234,73 @@ function [calcNet,tr] = train_network(archNet,rawData,calcLib,calcNet,tr)
       end
 
       % Feedback
-      tr = nnet.trainingRecord.update(tr,[epoch current_time perf vperf tperf mu gradient val_fail]);
+      tr = nntraining.tr_update(tr,[epoch current_time perf vperf tperf mu gradient val_fail]);
       statusValues = [epoch,current_time,best.perf,gradient,mu,val_fail];
-      nnet.train.feedback('update',archNet,tr,calcLib.options,rawData,calcLib,calcNet,best.net,status,statusValues);
+      nn_train_feedback('update',archNet,rawData,calcLib,calcNet,tr,status,statusValues);
       stop = ~isempty(tr.stop);
     end
-    
+
     % Stop
     if isParallel, stop = labBroadcast(mainWorkerInd,stop); end
     if stop, break, end
-    
+
     % Kalman Filter
-    % **********************************************
-    % Инициализация
-    calcNet2 = calcNet;
-    
-    % Матрицу ковариации извлекаем из пользовательских данных. Иначе, если
+    % **********************************************   
+    % Матрицу ковариации извлекаем из пользовательских данных. �?наче, если
     % мы поместим матрицу P в trainParam, то мы не сможем использовать
     % функцию sim для моделирования сети, поскольку функция sim
     % перегружена, а обект сети (первый аргумент фeнкции sim) не будет
     % распознан
-    net.userdata.P = 1e2*eye( lengthWB );
-    P = net.userdata.P;
-    norm_max = 1e3;
-    while true
-        % Якобиан // здесь Jx - это транспонированный якобиан (Хайкин), т.е.
-        % т.е. Jx = de/dw = - dy/dw (матрица градиента)
-        [~,~,~,Ewb,Jx,~] = calcLib.perfsJEJJ(calcNet2);
-        
-        R = eye( size(Jx,2) )*1e-1;
-        %             Q = eye( calcHints )*1e-6;
-        Q = 2e-3*P;
-        H = -Jx';
-        % Настройка коэффициента "забывания"
-        normP = max(max(P));
-        % if(normP/norm_max<1)
-        % beta = (1 - normP/norm_max)*beta_max;
-        % else
-        % beta = 0;
-        % end
-        
-        if(normP > 5*norm_max),
-            P = P.*norm_max/normP;
-        end
-        
-        % dbstop if warning
-        I = eye( lengthWB );
-        
-        % Уравнения наблюдателя Калмана (рекуррентный МНК как частный случай)
-        P = P + Q;
-        S = H*P*H' + R;
-        K = P*H'/S;
-        P = (I-K*H)*P*(I-K*H)'+K*R*K';
-        WB = WB + K*Ewb;
-        
-        calcNet2 = calcLib.setwb(calcNet,WB);
-        perf2 = calcLib.trainPerf(calcNet2);
-        
-        if isMainWorker, perfBreak = (perf2 < perf); end
-        if isParallel, perfBreak = labBroadcast(mainWorkerInd,perfBreak); end
-        if perfBreak
-            net.userdata.P = P;
-            calcNet = calcNet2;
-            break
-        end
-        
-        %       if isMainWorker
-        %         mu = mu * param.mu_inc;
-        %       end
-        
+
+    %     while true
+    % Якобиан // здесь Jx - это транспонированный якобиан (Хайкин), т.е.
+    % т.е. Jx = de/dw = - dy/dw (матрица градиента)
+    [~,~,~,Ewb,Jx,~] = calcLib.perfsJEJJ(calcNet);
+    
+    if ~isIncremental
+        P = (1 / e)  * eye( lengthWB );
+    elseif toDiagonal
+        P = toDiag(P);
     end
+    
+    %             Q = eye( calcHints )*1e-6;
+    H = -Jx';
+    % Настройка коэффициента "забывания"
+    normP = max(max(P));
+    % if(normP/norm_max<1)
+    % beta = (1 - normP/norm_max)*beta_max;
+    % else
+    % beta = 0;
+    % end
+    
+    if(normP > 5*norm_max),
+        P = P.*norm_max/normP;
+    end
+    
+    % dbstop if warning
+    I = eye( lengthWB );
+    
+    % Уравнения наблюдателя Калмана (рекуррентный МНК как частный случай)
+    P = P + Q;
+    S = H*P*H' + R;
+    K = P*H'/S;
+    P = (I-K*H)*P*(I-K*H)'+K*R*K';
+    WB = WB + K*Ewb;
+    
+    calcNet = calcLib.setwb(calcNet,WB);
+    %         perf2 = calcLib.trainPerf(calcNet2);
+    
+    %         if isMainWorker, perfBreak = (perf2 < perf); end
+    %         if isParallel, perfBreak = labBroadcast(mainWorkerInd,perfBreak); end
+    %         if perfBreak
+    %             break
+    %         end
+    
+    %       if isMainWorker
+    %         mu = mu * param.mu_inc;
+    %       end
+    
+    %     end
     % **********************************************
     
     % Validation
@@ -305,5 +309,16 @@ function [calcNet,tr] = train_network(archNet,rawData,calcLib,calcNet,tr)
       [best,tr,val_fail] = nntraining.validation(best,tr,val_fail,calcNet,perf,vperf,epoch);
     end
   end
+  
+    function toDiag(P)
+        [x,y] = size(P);
+        for i = 1:x
+            for j = 1:y
+                if i ~= j
+                    P(i, j) = 0;
+                end
+            end
+        end
+    end
 end
 
