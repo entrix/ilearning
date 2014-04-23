@@ -3,7 +3,7 @@ function ekf_train_test
 [X,T] = simpleseries_dataset;
 % argument don't used
 ekf_batch_proceed('trainlm', 0.01, 0.1, 0.2, false, false);
-% % batch ekf training
+% batch ekf training
 ekf_batch_proceed('trainekf', 0.001, 1, 0.2, true, false);
 % batch ukf training
 ekf_batch_proceed('trainukf', 0.001, 0.5, 200, true, false);
