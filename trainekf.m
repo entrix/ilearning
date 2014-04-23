@@ -1,5 +1,5 @@
 function [out1,out2] = trainekf(varargin)
-%TRAINLM Levenberg-Marquardt backpropagation.
+%TRAINEKF Extended Kalman filter implementation with backpropagation.
 %
 %  <a href="matlab:doc trainlm">trainlm</a> is a network training function that updates weight and
 %  bias states according to Levenberg-Marquardt optimization.
@@ -205,20 +205,37 @@ function [calcNet,tr] = train_network(archNet,rawData,calcLib,calcNet,tr)
     nn_train_feedback('start',archNet,status);
   end
 
-  e = net.userdata.e;
-  nu = net.userdata.nu;
-  q = net.userdata.q;
-  norm_max = net.userdata.norm_max;
-  isIncremental = net.userdata.isIncremental;
-  toDiagonal = net.userdata.toDiagonal;
+  e             = get_def_field(net, 'e', 1e-2);
+  nu            = get_def_field(net, 'nu', 5e-1);
+  q             = get_def_field(net, 'q', 2);
+  norm_max      = get_def_field(net, 'norm_max', 1e3);
+  isIncremental = get_def_field(net, 'isIncremental', false);
+  toDiagonal    = get_def_field(net, 'toDiagonal', false);
+  normalize     = get_def_field(net, 'normalize', false);
   
-  P = (1 / e)  * eye( lengthWB );
+  P = [];
   R = (1 / nu) * eye( size(jj,2) );
   Q = q        * eye( lengthWB );
   
+  X   = rawData.X;
+  PDc = rawData.Xi;
+  Ai  = rawData.Ai;
+  T   = rawData.T;
+  
+  % stored parameters
+  if get_def_field(net, 'printMatrix', false)
+    loop_n = net.userdata.loop_n;
+  end
+  if get_def_field(net, 'P', [])
+      P = net.userdata.P;
+  end
+  if (isempty(P))
+    P = (1 / e)  * eye( lengthWB );
+  end
+  
   % Train
   for epoch = 0:param.epochs
-
+    
     % Stopping Criteria
     if isMainWorker
       current_time = etime(clock,startTime);
@@ -229,39 +246,41 @@ function [calcNet,tr] = train_network(archNet,rawData,calcLib,calcNet,tr)
       elseif (epoch == param.epochs), tr.stop = 'Maximum epoch reached.'; calcNet = best.net;
       elseif (current_time >= param.time), tr.stop = 'Maximum time elapsed.'; calcNet = best.net;
       elseif (gradient <= param.min_grad), tr.stop = 'Minimum gradient reached.'; calcNet = best.net;
-%       elseif (mu >= param.mu_max), tr.stop = 'Maximum MU reached.'; calcNet = best.net;
+        %       elseif (mu >= param.mu_max), tr.stop = 'Maximum MU reached.'; calcNet = best.net;
       elseif (val_fail >= param.max_fail), tr.stop = 'Validation stop.'; calcNet = best.net;
       end
-
+      
       % Feedback
       tr = nntraining.tr_update(tr,[epoch current_time perf vperf tperf mu gradient val_fail]);
       statusValues = [epoch,current_time,best.perf,gradient,mu,val_fail];
       nn_train_feedback('update',archNet,rawData,calcLib,calcNet,tr,status,statusValues);
       stop = ~isempty(tr.stop);
     end
-
+    
     % Stop
     if isParallel, stop = labBroadcast(mainWorkerInd,stop); end
     if stop, break, end
-
+    
     % Extended Kalman Filter
-    % **********************************************   
-
+    % **********************************************
+    
     %     while true
     [~,~,~,Ewb,Jx,~] = calcLib.perfsJEJJ(calcNet);
     
     if ~isIncremental
-        P = (1 / e)  * eye( lengthWB );
+      P = (1 / e)  * eye( lengthWB );
     elseif toDiagonal
-        P = toDiag(P);
+      P = toDiag(P);
     end
     
     %             Q = eye( calcHints )*1e-6;
     H = -Jx';
-    normP = max(max(P));
     
-    if(normP > 5*norm_max),
+    if normalize
+      normP = max(max(P));
+      if(normP > 5*norm_max),
         P = P.*norm_max/normP;
+      end
     end
     
     % dbstop if warning
@@ -270,16 +289,19 @@ function [calcNet,tr] = train_network(archNet,rawData,calcLib,calcNet,tr)
     P = P + Q;
     S = H*P*H' + R;
     K = P*H'/S;
-    P = (I-K*H)*P*(I-K*H)'+K*R*K';
-    WB = WB + K*Ewb;
+    P2 = (I-K*H)*P*(I-K*H)'+K*R*K';
+    WB2 = WB + K*Ewb;
     
     calcNet = calcLib.setwb(calcNet,WB);
-	sum = 0;
-	for k = 1:length(Ewb)
-		sum = sum + Ewb(k)^2;
-	end
-	fprintf('\titer = %d\tmse  = %f\n', epoch, sqrt(sum));
-    % **********************************************
+    
+    % check results
+    if (get_def_field(net, 'checkIter', false))
+      check_iter();
+    end
+    
+    % update values
+    WB = WB2;
+    P  = P2;
     
     % Validation
     [perf,vperf,tperf,~,~,gradient] = calcLib.perfsJEJJ(calcNet);
@@ -288,15 +310,35 @@ function [calcNet,tr] = train_network(archNet,rawData,calcLib,calcNet,tr)
     end
   end
   
-    function toDiag(P)
-        [x,y] = size(P);
-        for i = 1:x
-            for j = 1:y
-                if i ~= j
-                    P(i, j) = 0;
-                end
-            end
-        end
+  % save parameters for follow invocations
+  calcNet.userdata.P = P;
+  
+  function check_iter
+    % check performance
+    net = setwb(net,WB2);
+    Yts = sim(network(net), X, PDc, Ai, T);
+    perf2 = feval(net.performFcn,net,Yts,T);
+    
+    fprintf('\tepoch = %d\t%s before = %f\t%s after = %f\tP_max = %f\n',...
+      epoch, net.performFcn, perf, net.performFcn, perf2, max(max(abs(P))));
+    
+    % print matrix visualization to file
+    if (get_def_field(net, 'printMatrix', false))
+      if (exist('trainekf','dir') ~= 7)
+        mkdir 'trainekf';
+      end
+      figure1 = figure;
+      axes1 = axes('Parent',figure1);
+      hold(axes1,'all');
+      set(figure1,'Visible', 'off');
+      imagesc(P);            %# Create a colored plot of the matrix values
+      colormap(bone);
+      saveas(figure1,sprintf('trainekf\\cov_matrix-%d-%d.png', loop_n, epoch))  % here you save the figure
+      close(figure1);
+      % view 3D visualization of the matrix values
+      %       [x, y] = stemMat(P);
+      %       stem3(x,y,P,'MarkerFaceColor','g');
     end
+  end
 end
 

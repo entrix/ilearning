@@ -1,5 +1,5 @@
-function [net,Y,E,Xf,Af,tr,WB_list]=adapt_ms(net,X,T,Xi,Ai)
-%ADAPT Adapt a neural network.
+function [net,Y,E,Xf,Af,tr]=adapt_x(net,X,T,Xi,Ai)
+%ADAPT_X Adapt a neural network.
 %
 %  [NET,Y,E,Pf,Af,AR] = <a href="matlab:doc adapt">adapt</a>(NET,X,T,Xi,Ai) takes time series inputs X,
 %  targets T, and initial input and layer delay states Xi and Ai.  The
@@ -110,7 +110,7 @@ Pd = tools.pd(net,Pc,Q,TS,hints);
 
 % Adapt network
 % [trainPerf,valPerf,testPerf,JE,JJ,trainN,valN,testN]=nn7.perfsJEJJ(net, calcData, hints);
-[net,Ac,tr,WB_list] = adaptekf_ms(net,X,Pd,T,Ai);
+[net,Ac,tr] = feval(net.adaptFcn,net,X,Pd,T,Ai);
 net = network(net);
 
 % Network outputs, errors, final inputs

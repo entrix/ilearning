@@ -1,7 +1,8 @@
 function [out1,out2,out3] = adaptekf(in1,in2,in3,in4,in5,in6,in7)
-%ADAPTWB Sequential order incremental adaption w/learning functions.
-%
-%  [NET,AR,AC] = <a href="matlab:doc adaptwb">adaptwb</a>(NET,PD,T,AI) takes a network, delayed inputs,
+%ADAPTEKF Sequential order incremental adaption w/learning functions
+%  through extended Kalman filter implementation.
+
+%  [NET,AR,AC] = <a href="matlab:doc adaptwb">adaptwb</a>(NET,X,PD,T,AI) takes a network, delayed inputs,
 %  targets, and initial layer states, and returns the updated network,
 %  adaption record, and layer outputs after applying the network's
 %  weight and bias learning rules for each timestep in T.
@@ -43,46 +44,41 @@ end
 %% =======================================================
 
 function [net,Ac,tr] = adapt_network(net,X,PD,T,Ai)
-  Q = numsamples(T);
   TS = numtimesteps(T);
-  hints = nn7.netHints(net);
-  hints = nn.connections(net,hints);
-  hints.simLayerOrder = nn.layer_order(net);
-  hints.outputInd = find(net.outputConnect);
-  
-  % Calculation Mode
-  calcMode = nncalc.defaultMode(net,Ai);
-%   calcMode.options = nnet.options.calc.defaults;
-  calcMode.options.showResources = 'yes';
-  
-  % Constants
-%   numLayers = net.numLayers;
-%   numInputs = net.numInputs;
-%   performFcn = net.performFcn;
-%   performParam = net.performParam;
-%   needGradient = nn.needsGradient(net);
-%   numLayerDelays = net.numLayerDelays;
 
   %Signals
   Ac = [Ai cell(net.numLayers,TS)];
     
-  % Initialize
+  % initialize
   tr.timesteps = 1:TS;
   tr.perf = zeros(1,TS);
   
+  % get external parameters
   WB = getwb(net);
   lengthWB = length(WB);
   
-  e = net.userdata.e;
-  nu = net.userdata.nu;
-  q = net.userdata.q;
-  norm_max = net.userdata.norm_max;
-  isIncremental = net.userdata.isIncremental;
-  toDiagonal = net.userdata.toDiagonal;
+  e             = get_def_field(net, 'e', 1e-2);
+  nu            = get_def_field(net, 'nu', 5e-1);
+  q             = get_def_field(net, 'q', 2);
+  norm_max      = get_def_field(net, 'norm_max', 1e3);
+  isIncremental = get_def_field(net, 'isIncremental', false);
+  toDiagonal    = get_def_field(net, 'toDiagonal', false);
+  normalize     = get_def_field(net, 'normalize', false);
   
-  P = (1 / e)  * eye( lengthWB );
+  P = [];
   R = (1 / nu) * eye( lengthWB );
   Q = q        * eye( lengthWB );
+  
+  % stored parameters
+  if get_def_field(net, 'printMatrix', false)
+    loop_n = net.userdata.loop_n;
+  end
+  if get_def_field(net, 'P', [])
+      P = net.userdata.P;
+  end
+  if (isempty(P))
+    P = (1 / e)  * eye( lengthWB );
+  end
   
   % Adapt
   for ts=1:TS
@@ -90,7 +86,11 @@ function [net,Ac,tr] = adapt_network(net,X,PD,T,Ai)
     % **********************************************   
 
     %     while true
-    [tr.perf(ts),Ewb,Jx,Y] = calcJeJx(net, X(ts), PD(1,:,ts), Ai, T(ts), {1});
+    ind = mod(int8(rand*100),99);
+    while ind == 0
+      ind = mod(int8(rand*100),99);
+    end
+    [tr.perf(ts),Ewb,Jx,~] = calcJeJx(net, X(ts), PD(1,:,ts), Ai, T(ts), {1});
     
     if ~isIncremental
         P = (1 / e)  * eye( lengthWB );
@@ -100,10 +100,12 @@ function [net,Ac,tr] = adapt_network(net,X,PD,T,Ai)
     
     %             Q = eye( calcHints )*1e-6;
     H = -Jx';
-    normP = max(max(P));
     
-    if(normP > 5*norm_max),
+    if normalize
+      normP = max(max(P));
+      if(normP > 5*norm_max),
         P = P.*norm_max/normP;
+      end
     end
     
     % dbstop if warning
@@ -112,12 +114,58 @@ function [net,Ac,tr] = adapt_network(net,X,PD,T,Ai)
     P = P + Q;
     S = H*P*H' + R;
     K = P*H'/S;
-    P = (I-K*H)*P*(I-K*H)'+K*R*K';
-    WB = WB + K*Ewb;
+    P2 = (I-K*H)*P*(I-K*H)'+K*R*K';
+    WB2 = WB + K*Ewb;
     
-    fprintf('\titer = %d\tmse  = %f\n', ts, mse(net, cell2mat(T(ts)), Y));
+    PDc = cellMat(PD(1,:,ts), net.numInputDelays);
+    if (get_def_field(net, 'checkIter', false))
+      check_iter();
+    end
+    
+    P = P2;
+    WB = WB2;
+    
+%     fprintf('\titer = %d\tmse  = %f\n', ts, mse(net, cell2mat(T(ts)), Y));
     net = setwb(net, WB);
     % **********************************************
+  end
+  
+  % save parameters for follow invocations
+  net.userdata.P = P;
+%   net = setwb(net, WB);
+  
+  function check_iter
+    % check performance
+    net = setwb(net,WB);
+    Yts = sim(network(net), X(ts), PDc, Ai, T(ts));
+    perf = feval(net.performFcn,net,Yts,cell2mat(T(ts)));
+    net = setwb(net,WB2);
+    Yts = sim(network(net), X(ts), PDc, Ai, T(ts));
+    perf2 = feval(net.performFcn,net,Yts,cell2mat(T(ts)));
+    Y = calcY(net, X, PD(1,:,:), Ai, T, {1});
+    Y = Y{1};
+    perf3 = feval(net.performFcn,net,Y,cell2mat(T));
+    
+    fprintf('\titer = %d\t%s before = %f\t%s after = %f\t%s full = %f\tP_max = %f\n',...
+      ts, net.performFcn, perf, net.performFcn, perf2, net.performFcn, perf3, max(max(abs(P))));
+    
+    % print matrix visualization to file
+    if (get_def_field(net, 'printMatrix', false))
+      if (exist('adaptekf','dir') ~= 7)
+        mkdir 'adaptekf';
+      end
+      figure1 = figure;
+      axes1 = axes('Parent',figure1);
+      hold(axes1,'all');
+      set(figure1,'Visible', 'off');
+      imagesc(P);            %# Create a colored plot of the matrix values
+      colormap(bone);
+      saveas(figure1,sprintf('adaptekf\\cov_matrix-%d-%d.png', loop_n, ts))  % here you save the figure
+      close(figure1);
+      % view 3D visualization of the matrix values
+      %       [x, y] = stemMat(P);
+      %       stem3(x,y,P,'MarkerFaceColor','g');
+    end
   end
 end
 

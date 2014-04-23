@@ -35,122 +35,157 @@ function [out1,out2,out3,out4] = adaptekf_ms(in1,in2,in3,in4,in5,in6,in7)
         end
     end
   else
-    [out1,out2,out3,out4] = adapt_network(in1,in2,in3,in4,in5);
+    [out1,out2,out3] = adapt_network(in1,in2,in3,in4,in5);
   end
 end
 
 %  BOILERPLATE_END
 %% =======================================================
 
-function [net,Ac,tr,WB_list] = adapt_network(net,X,PD,T,Ai)
-  Q = numsamples(T);
+function [net,Ac,tr] = adapt_network(net,X,PD,T,Ai)
   TS = numtimesteps(T);
 
-  % Calculation Mode
-  calcMode = nncalc.defaultMode(net,Ai);
-  %   calcMode.options = nnet.options.calc.defaults;
-  calcMode.options.showResources = 'yes';
-
-  % Constants
-  %   numLayers = net.numLayers;
-  %   numInputs = net.numInputs;
-  %   performFcn = net.performFcn;
-  %   performParam = net.performParam;
-  %   needGradient = nn.needsGradient(net);
-  %   numLayerDelays = net.numLayerDelays;
-
   %Signals
-
   Ac = [Ai cell(net.numLayers,TS)];
-
-  % Initialize
+    
+  % initialize
   tr.timesteps = 1:TS;
   tr.perf = zeros(1,TS);
-
+  
+  % get external parameters
   WB = getwb(net);
   lengthWB = length(WB);
-
-  e = net.userdata.e;
-  nu = net.userdata.nu;
-  q = net.userdata.q;
-  norm_max = net.userdata.norm_max;
-  isIncremental = net.userdata.isIncremental;
-  toDiagonal = net.userdata.toDiagonal;
-  % multistream parameters
-  l = net.userdata.l;
-  g = net.userdata.g;
-
-%   P = (1 / e)  * eye( lengthWB );
-  R = (1 / nu) * eye( lengthWB * g );
+  
+  l             = get_def_field(net, 'l', 10);  
+  e             = get_def_field(net, 'e', 1e-2);
+  nu            = get_def_field(net, 'nu', 5e-1);
+  q             = get_def_field(net, 'q', 2);
+  norm_max      = get_def_field(net, 'norm_max', 1e3);
+  isIncremental = get_def_field(net, 'isIncremental', false);
+  toDiagonal    = get_def_field(net, 'toDiagonal', false);
+  normalize     = get_def_field(net, 'normalize', false);
+  
+  P = [];
+  R = (1 / nu) * eye( lengthWB * l );
   Q = q        * eye( lengthWB );
-  WB_list      = cell(1,g);
-  H_con_list   = cell(1,g);
-  Ewb_con_list = cell(1,g);
-  K_list       = cell(1,g);
-  P_list       = cell(1,g);
-
-  skipUpdate = true;
-
-  % initialize weights for each stream
-  for i = 1:g
-    WB_list{i} = WB;
-    P_list{i}  = (1 / e)  * eye( lengthWB );
+  
+  H = zeros(lengthWB, lengthWB);
+  E = zeros(1, lengthWB);
+  
+  % stored parameters
+  if get_def_field(net, 'printMatrix', false)
+    loop_n = net.userdata.loop_n;
   end
+  if get_def_field(net, 'P', [])
+      P = net.userdata.P;
+  end
+  if (isempty(P))
+    P = (1 / e)  * eye( lengthWB );
+  end
+  
+  skipUpdate = true;
+  
   % Adapt
   for ts = 1:TS
     if mod(ts,l) == 0
       skipUpdate = false;
       % prepare global matrix A
-      S = R;
-      for i = 1:g
-        S = S + H_con_list{i}'*P_list{1}*H_con_list{i};
-      end
-    end
-    for i = 1:g
-      if skipUpdate
-        % ret random instance
-        ind = mod(int8(rand*100),99);
-        while ind == 0
-          ind = mod(int8(rand*100),99);  
-        end
-        % set weight for i-th group
-        setwb(net, WB_list{i});
-        % Kalman Filter
-        % **********************************************
-        [tr.perf(ts),Ewb,Jx,Y] = calcJeJx(net, X(ind), PD(1,:,ind), Ai, T(ind), {1});
-
-        if ~isIncremental
-          P_list{i} = (1 / e)  * eye( lengthWB );
-        elseif toDiagonal
-          P_list{i} = toDiag(P_list{i});
-        end
-
-        % concatenate the derivative matrices for i-th group
-        H_con_list{i} = cat(2, H_con_list{i}, -Jx');
-        % concatenate error vector for i-th group
-        Ewb_con_list{i} = cat(2, Ewb_con_list{i}, Ewb');
-      else
-        normP = max(max(P_list{i}));
-        if(normP > 5*norm_max),
-          P_list{i} = P_list{i}.*norm_max/normP;
-        end
-        % dbstop if warning
-        I = eye( lengthWB );
-        P_list{i} = P_list{i} + Q;
-        K_list{i} = P_list{i}*H_con_list{i}/S;
-        P_list{i} = (I-K_list{i}*H_con_list{i}')*P_list{i}*(I-K_list{i}*H_con_list{i}')'+...
-          K_list{i}*R*K_list{i}';
-        WB_list{i} = WB_list{i} + K_list{i}*Ewb_con_list{i}';
-        fprintf('\titer = %d\tgroup = %d\tmse  = %f\n', ts, i, mse(net, cell2mat(T(ts)), Y));
-      end
-      % **********************************************
+      S = R + H'*P*H;
     end
     if ~skipUpdate
+      
+      if normalize
+        normP = max(max(P));
+        if(normP > 5*norm_max),
+          P = P.*norm_max/normP;
+        end
+      end
+      
+      % dbstop if warning
+      I = eye( lengthWB );
+      P = P + Q;
+      K = P*H/S;
+      P2 = (I-K*H')*P*(I-K*H')'+K*R*K';
+      WB2 = WB + K*E';
+      
+      PDc = cellMat(PD(1,:,ts), net.numInputDelays);
+      if (get_def_field(net, 'checkIter', false))
+        check_iter();
+      end
+      
+      P = P2;
+      WB = WB2;
+      
+      setwb(net, WB);
+    end
+    
+    % ret random instance
+    %       ind = mod(int8(rand*100),99);
+    %       while ind == 0
+    %         ind = mod(int8(rand*100),99);
+    %       end
+    % set weight for i-th group
+    
+    % Mustistrem extended Kalman filter
+    % **********************************************
+    [tr.perf(ts),Ewb,Jx,~] = calcJeJx(net, X(ts), PD(1,:,ts), Ai, T(ts), {1});
+    
+    if ~isIncremental
+      P = (1 / e)  * eye( lengthWB );
+    elseif toDiagonal
+      P = toDiag(P);
+    end
+    
+    % concatenate the derivative matrices for i-th group
+    H = cat(2, H, -Jx);
+    % concatenate error vector for i-th group
+    E = cat(2, E, Ewb');
+    % **********************************************
+    
+    if ~skipUpdate
       % clear matrices
-        H_con_list   = cell(1,g);
-        Ewb_con_list = cell(1,g);
+      H = zeros(lengthWB, lengthWB);
+      E = zeros(1, lengthWB);
     end
     skipUpdate = true;
+  end
+  
+  % save parameters for follow invocations
+  net.userdata.P = P;
+%   net = setwb(net, WB);
+  
+  function check_iter
+    % check performance
+    net = setwb(net,WB);
+    Yts = sim(network(net), X(ts), PDc, Ai, T(ts));
+    perf = feval(net.performFcn,net,Yts,cell2mat(T(ts)));
+    net = setwb(net,WB2);
+    Yts = sim(network(net), X(ts), PDc, Ai, T(ts));
+    perf2 = feval(net.performFcn,net,Yts,cell2mat(T(ts)));
+    Y = calcY(net, X, PD(1,:,:), Ai, T, {1});
+    Y = Y{1};
+    perf3 = feval(net.performFcn,net,Y,cell2mat(T));
+    
+    fprintf('\titer = %d\t%s before = %f\t%s after = %f\t%s full = %f\tP_max = %f\n',...
+      ts, net.performFcn, perf, net.performFcn, perf2, net.performFcn, perf3, max(max(abs(P))));
+    
+    % print matrix visualization to file
+    if (get_def_field(net, 'printMatrix', false))
+      if (exist('adaptekf_ms','dir') ~= 7)
+        mkdir 'adaptekf_ms';
+      end
+      figure1 = figure;
+      axes1 = axes('Parent',figure1);
+      hold(axes1,'all');
+      set(figure1,'Visible', 'off');
+      imagesc(P);            %# Create a colored plot of the matrix values
+      colormap(bone);
+      saveas(figure1,sprintf('adaptekf_ms\\cov_matrix-%d-%d.png', loop_n, ts))  % here you save the figure
+      close(figure1);
+      % view 3D visualization of the matrix values
+      %       [x, y] = stemMat(P);
+      %       stem3(x,y,P,'MarkerFaceColor','g');
+    end
   end
 end
 
