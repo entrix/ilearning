@@ -48,7 +48,7 @@ ekf_batch_proceed('adaptukf', 0.01, 0.5, 200, true, false);
       fprintf('                                                         \n');
       fprintf(strcat('\tmean square error = %f\n'), mse(net,Ts,Y));
     elseif strcmp(func, 'trainekf') == 1
-      fprintf(strcat('\run function %s\n'), func);
+      fprintf(strcat('\trun function %s\n'), func);
       % set our train function for EKF
       net.trainFcn = func; % 'trainkf_n';
       net.userdata.checkIter = true;
@@ -111,6 +111,7 @@ ekf_batch_proceed('adaptukf', 0.01, 0.5, 200, true, false);
         fprintf('                                                         \n');
       end
     elseif strcmp(func,'adaptekf') == 1
+      fprintf(strcat('\trun function %s\n'), func);
       net.adaptFcn = func;
       net.userdata.checkIter = true;
       net.userdata.printMatrix = true;
