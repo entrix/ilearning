@@ -1,5 +1,5 @@
-function [out1,out2] = trainukf(varargin)
-%TRAINUKF Unscented Kalman filter implementation with backpropagation.
+function [out1,out2] = trainlm_ch(varargin)
+%TRAINLM Levenberg-Marquardt backpropagation.
 %
 %  <a href="matlab:doc trainlm">trainlm</a> is a network training function that updates weight and
 %  bias states according to Levenberg-Marquardt optimization.
@@ -168,30 +168,30 @@ function [calcNet,tr] = train_network(archNet,rawData,calcLib,calcNet,tr)
 
   % Create broadcast variables
   stop = [];
+  muBreak = [];
+  perfBreak = [];
+  WB2 = [];
   
   % Initialize
-%   archNet.trainParam.showWindow = false;
   param = archNet.trainParam;
   if isMainWorker
     startTime = clock;
     original_net = calcNet;
   end
   
-  [perf,vperf,tperf,~,jj,gradient] = calcLib.perfsJEJJ(calcNet);
+  [perf,vperf,tperf,je,jj,gradient] = calcLib.perfsJEJJ(calcNet);
   
   if isMainWorker
     [best,val_fail] = nntraining.validation_start(calcNet,perf,vperf);
     WB = calcLib.getwb(calcNet);
     lengthWB = length(WB);
-%     ii = sparse(1:lengthWB,1:lengthWB,ones(1,lengthWB));
+    ii = sparse(1:lengthWB,1:lengthWB,ones(1,lengthWB));
     mu = param.mu;
-    % set as general net
-    net = archNet;
 
     % Training Record
     tr.best_epoch = 0;
     tr.goal = param.goal;
-    tr.states = {'epoch','time','perf','vperf','tperf','gradient','val_fail'};
+    tr.states = {'epoch','time','perf','vperf','tperf','mu','gradient','val_fail'};
 
     % Status
     status = ...
@@ -200,63 +200,15 @@ function [calcNet,tr] = train_network(archNet,rawData,calcLib,calcNet,tr)
       nntraining.status('Time','seconds','linear','discrete',0,param.time,0), ...
       nntraining.status('Performance','','log','continuous',perf,param.goal,perf) ...
       nntraining.status('Gradient','','log','continuous',gradient,param.min_grad,gradient) ...
+      nntraining.status('Mu','','log','continuous',mu,param.mu_max,mu) ...
       nntraining.status('Validation Checks','','linear','discrete',0,param.max_fail,0) ...
       ];
     nn_train_feedback('start',archNet,status);
   end
 
-  % get external parameters
-  WB         = getwb(net);
-  lengthWB   = length(WB);
-  
-  e          = get_def_field(net, 'e', 1e-2);
-  nu         = get_def_field(net, 'nu', 5e-1);
-  alpha      = get_def_field(net, 'alpha', 1e-3);
-  beta       = get_def_field(net, 'beta', 2);
-  q          = get_def_field(net, 'q', 2);
-  lambda_RLS = get_def_field(net, 'lambda_RLS', 1);
-  alpha_RM   = get_def_field(net, 'alpha_RM', 5e-1);
-  norm_max      = get_def_field(net, 'norm_max', 1e3);
-  isIncremental = get_def_field(net, 'isIncremental', false);
-  toDiagonal    = get_def_field(net, 'toDiagonal', false);
-  normalize     = get_def_field(net, 'normalize', false);
-  %   q  = net.userdata.q;
-  
-  X   = rawData.X;
-  PDc = rawData.Xi;
-  Ai  = rawData.Ai;
-  T   = rawData.T;
-  
-  % get inferential paramreters
-  L  = numel(WB);
-  k  = 3 - L;
-  lambda = alpha^2 * (L + k) - L;
-  W_m_0  = lambda / (L + lambda);
-  W_c_0  = lambda / (L + lambda) + 1 - alpha^2 + beta;
-  W_mc_i = 1 /  (2 * (L + lambda));
-  gamma  = sqrt(L + lambda);
-  R_r = q * eye( lengthWB );
-  R_e = (1 / nu) * eye( length(T{1}) );
-  P = [];
-    
-  % net output parameters
-  v_out_len   = length(T{1});
-  v_train_len = 2*L + 1;
-  
-  % stored parameters
-  if get_def_field(net, 'printMatrix', false)
-    loop_n = net.userdata.loop_n;
-  end
-  if get_def_field(net, 'P', [])
-      P = net.userdata.P;
-  end
-  if (isempty(P))
-    P = (1 / e)  * eye( lengthWB );
-  end
-  
   % Train
   for epoch = 0:param.epochs
-    
+
     % Stopping Criteria
     if isMainWorker
       current_time = etime(clock,startTime);
@@ -267,167 +219,75 @@ function [calcNet,tr] = train_network(archNet,rawData,calcLib,calcNet,tr)
       elseif (epoch == param.epochs), tr.stop = 'Maximum epoch reached.'; calcNet = best.net;
       elseif (current_time >= param.time), tr.stop = 'Maximum time elapsed.'; calcNet = best.net;
       elseif (gradient <= param.min_grad), tr.stop = 'Minimum gradient reached.'; calcNet = best.net;
-        %       elseif (mu >= param.mu_max), tr.stop = 'Maximum MU reached.'; calcNet = best.net;
+      elseif (mu >= param.mu_max), tr.stop = 'Maximum MU reached.'; calcNet = best.net;
       elseif (val_fail >= param.max_fail), tr.stop = 'Validation stop.'; calcNet = best.net;
       end
-      
+
       % Feedback
       tr = nntraining.tr_update(tr,[epoch current_time perf vperf tperf mu gradient val_fail]);
       statusValues = [epoch,current_time,best.perf,gradient,mu,val_fail];
       nn_train_feedback('update',archNet,rawData,calcLib,calcNet,tr,status,statusValues);
       stop = ~isempty(tr.stop);
     end
-    
+
     % Stop
     if isParallel, stop = labBroadcast(mainWorkerInd,stop); end
     if stop, break, end
 
-    % init inner loop variables
-%     d = zeros(v_out_len,1);
-    P_d_d = zeros( v_out_len, v_out_len );
-    P_w_d = zeros( lengthWB,  v_out_len );
+    % Levenberg Marquardt
+    while true
+      if isMainWorker, muBreak = (mu > param.mu_max); end
+      if isParallel, muBreak = labBroadcast(mainWorkerInd,muBreak); end
+      if muBreak, break; end
     
-    % Unscented Kalman Filter
-    % **********************************************
-    %     R_r = (1 / lambda_RLS - 1) * P;
+      if isMainWorker
+        % Check for Singular Matrix
+        [msgstr,msgid] = lastwarn;
+        lastwarn('MATLAB:nothing','MATLAB:nothing')
+        warnstate = warning('off','all');
+        dWB = -(jj+ii*mu) \ je;
+        [~,msgid1] = lastwarn;
+        flag_inv = isequal(msgid1,'MATLAB:nothing');
+        if flag_inv, lastwarn(msgstr,msgid); end;
+        warning(warnstate)
+        WB2 = WB + dWB;
+      end
+      
+      calcNet2 = calcLib.setwb(calcNet,WB2);
+      perf2 = calcLib.trainPerf(calcNet2);
 
-    
-    if ~isIncremental
-      P = (1 / e)  * eye( lengthWB );
-    end
-    
-    if normalize
-      normP = max(max(P));
-      if(normP > 5*norm_max),
-        P = P.*norm_max/normP;
+      % check results
+      if (get_def_field(archNet, 'checkIter', false))
+        check_iter();
+      end
+      
+      if isMainWorker, perfBreak = (perf2 < perf) && flag_inv; end
+      if isParallel, perfBreak = labBroadcast(mainWorkerInd,perfBreak); end
+      if perfBreak
+        WB = WB2;
+        calcNet = calcNet2;
+        if isMainWorker
+          mu = max(mu*param.mu_dec,1e-20);
+        end
+        break
+      end
+      
+      if isMainWorker
+        mu = mu * param.mu_inc;
       end
     end
-    
-    P_w_min = P + R_r;
-    
-    if (toDiagonal)
-      P_w_min = toDiag(P_w_min);
-    end
-    
-    % calculate sigma outs
-    WB_sigma = sigmas(WB,P_w_min,gamma);
-    
-    % calculate sigma outs
-    D_sigma = cell(1, 2*L+1);
-%     PDc = rawData.Xi;
-    for i = 1:(2 * L + 1)
-      net = setwb(net, WB_sigma(:, i));
-      D_sigma{i} = sim(network(net), X, PDc, Ai, T);
-      %       D_sigma(:, i) = cell2mat(calcY(net, X, PDc, Ai, T, {1}));
-    end
-    
-    % calculate net out
-    %     for i = 1:(2 * L + 1)
-    %       if i == 1
-    %         W = W_m_0;
-    %       else
-    %         W = W_mc_i;
-    %       end
-    %         d = d + W * D_sigma(:, i);
-    %     end
-    %     d = d / (2*L + 1);
-    % set parameter as well as in EKF
-    d = cell2mat(D_sigma{i});
-    
-    % calculate Kalman gain
-    [l,~] = size(d);
-    for i = 1:(2 * L + 1)
-      if i == 1
-        W = W_c_0;
-      else
-        W = W_mc_i;
-      end
-      P_d_d = P_d_d + W * (cell2mat(D_sigma{i}) - d)'  * (cell2mat(D_sigma{i}) - d) + R_e;
-      WB_l = (WB_sigma(:, i) - WB);
-      P_w_d = P_w_d + W * WB_l(:, ones(1, l)) * (cell2mat(D_sigma{i}) - d);
-    end
-    K = P_w_d/P_d_d;
-    
-    % update weights
-    WB2 = WB + sum((K * (cell2mat(T) - d)')')'/l;
-    
-    % update covariance matrix
-    P2  = P_w_min - K * P_d_d * K';
-    
-    % Robbin-Monro approximation
-    R_r = (1 - alpha_RM) * R_r + alpha_RM * K * (cell2mat(T) - d)' *...
-                                  (cell2mat(T) - d) * K';
-    %     R_e = (1 - alpha_RM) * R_e + alpha_RM * (cell2mat(T) - d) *...
-    %       (cell2mat(T) - d)';
-    
-    if (toDiagonal)
-      % force matrices to diagonal form
-      R_r = toDiag(R_r);
-      %       R_e = toDiag(R_e);
-    end
-    % **********************************************
-    
-    % check results
-    if (get_def_field(net, 'checkIter', false))
-      check_iter();
-    end
-    
-    % update values
-    WB = WB2;
-    P  = P2;
-    
-    calcNet = calcLib.setwb(calcNet,WB);
     
     % Validation
-    [perf,vperf,tperf,~,~,gradient] = calcLib.perfsJEJJ(calcNet);
+    [perf,vperf,tperf,je,jj,gradient] = calcLib.perfsJEJJ(calcNet);
     if isMainWorker
       [best,tr,val_fail] = nntraining.validation(best,tr,val_fail,calcNet,perf,vperf,epoch);
     end
   end
   
-  % save parameters for follow invocations
-  calcNet.userdata.P = P;
-  
   function check_iter
     % check performance
-    net = setwb(net,WB2);
-    Yts = sim(network(net), X, PDc, Ai, T);
-    perf2 = feval(net.performFcn,net,Yts,T);
-    
-    fprintf('\titer = %d\t%s before = %f\t%s after = %f\tP_max = %f\n',...
-      epoch, net.performFcn, perf, net.performFcn, perf2, max(max(abs(P))));
-    
-    % print matrix visualization to file
-    if (get_def_field(net, 'printMatrix', false))
-      if (exist('trainukf','dir') ~= 7)
-        mkdir 'trainukf';
-      end
-      figure1 = figure;
-      axes1 = axes('Parent',figure1);
-      hold(axes1,'all');
-      set(figure1,'Visible', 'off');
-      imagesc(P);            %# Create a colored plot of the matrix values
-      colormap(bone);
-      saveas(figure1,sprintf('trainukf\\cov_matrix-%d-%d.png', loop_n, epoch))  % here you save the figure
-      close(figure1);
-      % view 3D visualization of the matrix values
-      %       [x, y] = stemMat(P);
-      %       stem3(x,y,P,'MarkerFaceColor','g');
-    end
+    fprintf('\titer = %d\t%s before = %f\t%s after = %f\n',...
+      epoch, archNet.performFcn, perf, archNet.performFcn, perf2);
   end
-end
-
-function WB_sigma = sigmas(WB,P,gamma)
-%Sigma points around reference point
-%Inputs:
-%       x: reference point
-%       P: covariance
-%       c: coefficient
-%Output:
-%       X: Sigma points
-
-  A = gamma*chol(P)';
-  Y = WB(:,ones(1,numel(WB)));
-  WB_sigma = [WB Y+A Y-A];
 end
 

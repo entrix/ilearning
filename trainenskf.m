@@ -1,5 +1,5 @@
-function [out1,out2] = trainukf(varargin)
-%TRAINUKF Unscented Kalman filter implementation with backpropagation.
+function [out1,out2] = trainenskf(varargin)
+%TRAINENSKF Ensemble Kalman filter implementation.
 %
 %  <a href="matlab:doc trainlm">trainlm</a> is a network training function that updates weight and
 %  bias states according to Levenberg-Marquardt optimization.
@@ -209,39 +209,53 @@ function [calcNet,tr] = train_network(archNet,rawData,calcLib,calcNet,tr)
   WB         = getwb(net);
   lengthWB   = length(WB);
   
-  e          = get_def_field(net, 'e', 1e-2);
-  nu         = get_def_field(net, 'nu', 5e-1);
-  alpha      = get_def_field(net, 'alpha', 1e-3);
-  beta       = get_def_field(net, 'beta', 2);
-  q          = get_def_field(net, 'q', 2);
-  lambda_RLS = get_def_field(net, 'lambda_RLS', 1);
-  alpha_RM   = get_def_field(net, 'alpha_RM', 5e-1);
+  e             = get_def_field(net, 'e', 1e-2);
+  nu            = get_def_field(net, 'nu', 5e-1);
+  q             = get_def_field(net, 'q', 2);
   norm_max      = get_def_field(net, 'norm_max', 1e3);
   isIncremental = get_def_field(net, 'isIncremental', false);
   toDiagonal    = get_def_field(net, 'toDiagonal', false);
   normalize     = get_def_field(net, 'normalize', false);
-  %   q  = net.userdata.q;
+  
   
   X   = rawData.X;
   PDc = rawData.Xi;
   Ai  = rawData.Ai;
   T   = rawData.T;
-  
-  % get inferential paramreters
-  L  = numel(WB);
-  k  = 3 - L;
-  lambda = alpha^2 * (L + k) - L;
-  W_m_0  = lambda / (L + lambda);
-  W_c_0  = lambda / (L + lambda) + 1 - alpha^2 + beta;
-  W_mc_i = 1 /  (2 * (L + lambda));
-  gamma  = sqrt(L + lambda);
-  R_r = q * eye( lengthWB );
-  R_e = (1 / nu) * eye( length(T{1}) );
+  Tmat = cell2mat(T);
   P = [];
-    
+  
+  R = (1 / nu) * eye( numel(T) );
+  Q = q        * eye( lengthWB );
+  %   q  = net.userdata.q;
+  
+  
+  % ensemble parameter
+  n = get_def_field(net, 'n', 10);
+  
   % net output parameters
-  v_out_len   = length(T{1});
-  v_train_len = 2*L + 1;
+  v_out_len   = numel(T);
+  v_train_len = n;
+  
+  
+  WB_list = zeros(lengthWB, v_train_len);
+  Y_list  = zeros(v_out_len, v_train_len);
+  
+  min_WB = min(min(WB));
+  max_WB = max(max(WB));
+  
+  % initialize ensemble weights
+  for i = 1:10
+    WB_list(:, i) = min_WB + (max_WB - min_WB).*rand(lengthWB,1);
+  end
+  
+  % initialize ensemble outs
+  for i = 2:n
+    net = setwb(net, WB_list(:, i));
+    Y_list(:, i) = cell2mat(sim(network(net), X, PDc, Ai, T));
+  end
+  y_mean = (1 / n) * sum(Y_list(:,:)')';
+  Ey = [ Y_list - y_mean(:, ones(1,v_train_len)) ];
   
   % stored parameters
   if get_def_field(net, 'printMatrix', false)
@@ -251,7 +265,7 @@ function [calcNet,tr] = train_network(archNet,rawData,calcLib,calcNet,tr)
       P = net.userdata.P;
   end
   if (isempty(P))
-    P = (1 / e)  * eye( lengthWB );
+    P = (1 / e)  * eye( v_out_len );
   end
   
   % Train
@@ -282,88 +296,51 @@ function [calcNet,tr] = train_network(archNet,rawData,calcLib,calcNet,tr)
     if isParallel, stop = labBroadcast(mainWorkerInd,stop); end
     if stop, break, end
 
-    % init inner loop variables
-%     d = zeros(v_out_len,1);
-    P_d_d = zeros( v_out_len, v_out_len );
-    P_w_d = zeros( lengthWB,  v_out_len );
-    
-    % Unscented Kalman Filter
+    % Ensemble Kalman Filter
     % **********************************************
-    %     R_r = (1 / lambda_RLS - 1) * P;
 
+    % recalculate inner loop variables
+    WB_mean = (1 / n) * sum(WB_list(:,:)')';
+    E = [ WB_list - WB_mean(:, ones(1,v_train_len)) ];
     
-    if ~isIncremental
-      P = (1 / e)  * eye( lengthWB );
-    end
+    Pxy = (1 / (n - 1)) * E  * Ey';
+    Pyy = P * (1 / (n - 1)) * Ey * Ey' * P + R;
     
-    if normalize
-      normP = max(max(P));
-      if(normP > 5*norm_max),
-        P = P.*norm_max/normP;
-      end
-    end
+%     Pxy = toDiag(Pxy);
+%     Pyy = toDiag(Pyy);
     
-    P_w_min = P + R_r;
-    
+%     if normalize
+%       normP = max(max(Pxy));
+%       if(normP > 5*norm_max),
+%         Pxy = Pxy.*norm_max/normP;
+%       end
+%       normP = max(max(Pyy));
+%       if(normP > 5*norm_max),
+%         Pyy = Pyy.*norm_max/normP;
+%       end
+%     end
+
     if (toDiagonal)
-      P_w_min = toDiag(P_w_min);
+      Pxy = toDiag(Pxy);
+      Pyy = toDiag(Pyy);
     end
     
-    % calculate sigma outs
-    WB_sigma = sigmas(WB,P_w_min,gamma);
-    
-    % calculate sigma outs
-    D_sigma = cell(1, 2*L+1);
-%     PDc = rawData.Xi;
-    for i = 1:(2 * L + 1)
-      net = setwb(net, WB_sigma(:, i));
-      D_sigma{i} = sim(network(net), X, PDc, Ai, T);
-      %       D_sigma(:, i) = cell2mat(calcY(net, X, PDc, Ai, T, {1}));
+    K   = Pxy/Pyy;
+
+    y_mean = (1 / n) * sum(Y_list(:,:)')';
+    Ey = [ Y_list - y_mean(:, ones(1,v_train_len))  ];
+
+    % calculate ensemble outs
+    for i = 1:n
+      net = setwb(net, WB_list(:, i));
+      Y_list(:, i) = cell2mat(sim(network(net), X, PDc, Ai, T));
     end
     
-    % calculate net out
-    %     for i = 1:(2 * L + 1)
-    %       if i == 1
-    %         W = W_m_0;
-    %       else
-    %         W = W_mc_i;
-    %       end
-    %         d = d + W * D_sigma(:, i);
-    %     end
-    %     d = d / (2*L + 1);
-    % set parameter as well as in EKF
-    d = cell2mat(D_sigma{i});
-    
-    % calculate Kalman gain
-    [l,~] = size(d);
-    for i = 1:(2 * L + 1)
-      if i == 1
-        W = W_c_0;
-      else
-        W = W_mc_i;
-      end
-      P_d_d = P_d_d + W * (cell2mat(D_sigma{i}) - d)'  * (cell2mat(D_sigma{i}) - d) + R_e;
-      WB_l = (WB_sigma(:, i) - WB);
-      P_w_d = P_w_d + W * WB_l(:, ones(1, l)) * (cell2mat(D_sigma{i}) - d);
-    end
-    K = P_w_d/P_d_d;
-    
-    % update weights
-    WB2 = WB + sum((K * (cell2mat(T) - d)')')'/l;
-    
-    % update covariance matrix
-    P2  = P_w_min - K * P_d_d * K';
-    
-    % Robbin-Monro approximation
-    R_r = (1 - alpha_RM) * R_r + alpha_RM * K * (cell2mat(T) - d)' *...
-                                  (cell2mat(T) - d) * K';
-    %     R_e = (1 - alpha_RM) * R_e + alpha_RM * (cell2mat(T) - d) *...
-    %       (cell2mat(T) - d)';
-    
-    if (toDiagonal)
-      % force matrices to diagonal form
-      R_r = toDiag(R_r);
-      %       R_e = toDiag(R_e);
+    % calculate ensemble eeights
+    for i = 1:n
+      net = setwb(net, WB_list(:, i));
+      WB_list(:, i) = WB_list(:, i) +...
+        K * (Tmat(:) + R(:, i) - Y_list(:, i)) + Q(:, i);
     end
     % **********************************************
     
@@ -372,11 +349,7 @@ function [calcNet,tr] = train_network(archNet,rawData,calcLib,calcNet,tr)
       check_iter();
     end
     
-    % update values
-    WB = WB2;
-    P  = P2;
-    
-    calcNet = calcLib.setwb(calcNet,WB);
+    calcNet = calcLib.setwb(calcNet,WB_mean);
     
     % Validation
     [perf,vperf,tperf,~,~,gradient] = calcLib.perfsJEJJ(calcNet);
@@ -390,7 +363,7 @@ function [calcNet,tr] = train_network(archNet,rawData,calcLib,calcNet,tr)
   
   function check_iter
     % check performance
-    net = setwb(net,WB2);
+    net = setwb(net,WB_mean);
     Yts = sim(network(net), X, PDc, Ai, T);
     perf2 = feval(net.performFcn,net,Yts,T);
     
@@ -399,8 +372,8 @@ function [calcNet,tr] = train_network(archNet,rawData,calcLib,calcNet,tr)
     
     % print matrix visualization to file
     if (get_def_field(net, 'printMatrix', false))
-      if (exist('trainukf','dir') ~= 7)
-        mkdir 'trainukf';
+      if (exist('trainenskf','dir') ~= 7)
+        mkdir 'trainenskf';
       end
       figure1 = figure;
       axes1 = axes('Parent',figure1);
@@ -408,26 +381,12 @@ function [calcNet,tr] = train_network(archNet,rawData,calcLib,calcNet,tr)
       set(figure1,'Visible', 'off');
       imagesc(P);            %# Create a colored plot of the matrix values
       colormap(bone);
-      saveas(figure1,sprintf('trainukf\\cov_matrix-%d-%d.png', loop_n, epoch))  % here you save the figure
+      saveas(figure1,sprintf('trainenskf\\cov_matrix-%d-%d.png', loop_n, epoch))  % here you save the figure
       close(figure1);
       % view 3D visualization of the matrix values
       %       [x, y] = stemMat(P);
       %       stem3(x,y,P,'MarkerFaceColor','g');
     end
   end
-end
-
-function WB_sigma = sigmas(WB,P,gamma)
-%Sigma points around reference point
-%Inputs:
-%       x: reference point
-%       P: covariance
-%       c: coefficient
-%Output:
-%       X: Sigma points
-
-  A = gamma*chol(P)';
-  Y = WB(:,ones(1,numel(WB)));
-  WB_sigma = [WB Y+A Y-A];
 end
 
